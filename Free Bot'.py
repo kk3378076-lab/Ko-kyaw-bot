@@ -4,11 +4,11 @@ from aiohttp import web
 import cv2
 import ddddocr
 import numpy as np
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, time
 
-BOT_TOKEN = '8892903924:AAFlyoVK91o9u2ZGMU9qImTcIxBFEjeSE-U'
-GITHUB_TOKEN = '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'
-ADMIN_ID = "8271519771"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+GITHUB_TOKEN = "......"
+ADMIN_ID = 8271519771
 REPO_OWNER = "minthant2006mm-sudo"
 REPO_NAME = "1234"
 SUCCESS_CODE = asyncio.Queue()
