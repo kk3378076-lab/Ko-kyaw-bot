@@ -6,8 +6,8 @@ import ddddocr
 import numpy as np
 from datetime import datetime, timedelta, 
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-GITHUB_TOKEN = "......"
+BOT_TOKEN = os.getenv("8995975029:AAEtuQNqXpnPtzL0bCUQw_eyw6q2VN5iiTg")
+GITHUB_TOKEN = 
 ADMIN_ID = 8271519771
 REPO_OWNER = "minthant2006mm-sudo"
 REPO_NAME = "1234"
