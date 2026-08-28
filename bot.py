@@ -4,7 +4,7 @@ from aiohttp import web
 import cv2
 import ddddocr
 import numpy as np
-from datetime import datetime, timedelta, 
+from datetime import datetime, timedelta
 
 BOT_TOKEN = os.getenv("8995975029:AAEtuQNqXpnPtzL0bCUQw_eyw6q2VN5iiTg")
 GITHUB_TOKEN = 
