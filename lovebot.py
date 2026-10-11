@@ -8,7 +8,7 @@ import numpy as np
 from datetime import datetime, timedelta, timezone
 
 # ==================== CONFIGURATION ====================
-BOT_TOKEN = "**************"
+BOT_TOKEN = os.getenv("8942457020:AAGcDUgoDArkvl8m9IbIoDaFwJdF8g2WbrU")
 GITHUB_TOKEN = "************"
 REPO_OWNER = "kk3378076-lab"
 REPO_NAME = "kokyawkyaw-bot"
